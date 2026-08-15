@@ -106,7 +106,7 @@ python3 -m src.table
 python3 -m src.agreement
 ```
 
-Drop `--limit` for a full run. Output from the run reported above is committed under `results/`.
+Drop `--limit` for a full run. Output from the run reported above is committed under `runs/`.
 
 ## Limitations
 
