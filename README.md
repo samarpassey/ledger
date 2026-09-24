@@ -1,12 +1,69 @@
 # Ledger
 
-A claim-level grounding eval for RAG over insurance policy documents.
+This checks whether an AI system's answers are actually backed by the documents it points to,
+one sentence at a time.
 
-TL;DR: An ordinary RAG pipeline over Ontario's standard auto policy refused 4 of 13 answerable questions, every one a retrieval miss with the answering clause sitting in the corpus. No citation metric detects this, because a refusal carries no citations to check. Of the claims the system did make, 81.4% were grounded in their cited passage with zero fabrications. The verifier agreed with my hand labels 52% of the time, so read that grounding number as a floor.
+The usual way to measure that is citation coverage: what share of an answer's sentences carry a
+source reference. That number only proves a document was attached. It says nothing about whether
+the sentence is true relative to that document. Ledger splits every answer into single factual
+claims and checks each one against **only the passage that claim cites**, in a call that never
+sees the question or the rest of the answer.
 
-Most RAG systems report citation coverage: the percentage of answer sentences carrying a source reference. That number proves a chunk was retrieved and attached. It proves nothing about whether the sentence is true relative to that chunk.
+**What the run found.** An ordinary retrieval pipeline over Ontario's standard auto insurance
+policy refused 4 of 13 answerable questions, and in every case the answering clause was sitting in
+the corpus. No citation metric detects that, because a refusal carries no citations to check. Of
+the claims the system did make, 81.4% were supported by the passage they cited, with zero
+fabrications. Then the harness checked itself: the automated verifier agreed with hand labels only
+52% of the time, so 81.4% is a floor, not a score.
 
-Ledger splits every answer into atomic claims and verifies each one against **only the chunk that claim cites**, in a call that never sees the question or the rest of the answer.
+## How it works
+
+- **Ordinary on purpose, so the failure is the finding.** BM25 top-5 retrieval, a plain
+  cite-your-sources prompt, `claude-sonnet-4-6` at temperature 0, over 104 chunks of the Ontario
+  Automobile Policy and two endorsements. Nothing here is tuned to look good.
+- **Six stages, each reading and writing JSON in `runs/`.** Ingest, retrieve and generate,
+  decompose into atomic claims, verify each claim against its own cited chunk, report, and
+  agreement. Any stage re-runs without repeating the API calls before it, and the run reported
+  above is committed, so the numbers reproduce from a clean clone with no key.
+- **Stock Python, no runtime dependencies.** Standard library only, including a pure-Python BM25
+  and direct `urllib` calls to the Anthropic API. Only the PDF ingest step needs a third-party
+  package.
+
+<!-- TODO: screenshot here - the `python3 -m src.table` overall block, and the agreement matrix. -->
+
+## Run it
+
+Needs Python 3.11 or newer. The report and agreement stages run from the committed data with no
+key and no install:
+
+```bash
+python3 -m src.table       # per-question and overall metrics
+python3 -m src.agreement   # verifier against hand labels, as a confusion matrix
+```
+
+Reproducing the run from scratch needs an Anthropic API key and the corpus, which is not committed
+because it is Crown copyright:
+
+```bash
+# Download from fsrao.ca into corpus/:
+#   oap1.pdf    OAP 1, OAP1-EN.4 (2026)
+#   opcf20.pdf  OPCF 20, AF-142E
+#   opcf27.pdf  OPCF 27, AF-137E
+
+echo "ANTHROPIC_API_KEY=sk-ant-..." > .env
+
+pip install pdfplumber      # the ingest stage only; nothing else needs it
+python3 -m src.ingest
+
+python3 -m src.rag --limit 3
+python3 -m src.decompose --limit 3
+python3 -m src.verify --limit 3
+python3 -m src.table
+python3 -m src.agreement
+```
+
+Drop `--limit` for a full run. `src/anthropic_client.py` reads `.env` itself, so no dotenv package
+is involved.
 
 ## Results
 
@@ -32,10 +89,10 @@ Four of thirteen non-trap questions were refused with the answer sitting in the 
 
 | Question | Missed chunk |
 |---|---|
-| Who counts as an insured person under Liability Coverage | `c_030` — OAP 1 s.3.2 Who is Covered |
-| What happens if I refuse an inspection | `c_027` — OAP 1 s.2.5 Inspection |
-| Will the policy pay for a rental while my car is repaired | `c_098` — OPCF 20, the whole endorsement |
-| Does my policy cover damage to a car I rented | `c_018` — OAP 1 s.2.2.2 Temporary Substitute Automobile |
+| Who counts as an insured person under Liability Coverage | `c_030`, OAP 1 s.3.2 Who is Covered |
+| What happens if I refuse an inspection | `c_027`, OAP 1 s.2.5 Inspection |
+| Will the policy pay for a rental while my car is repaired | `c_098`, OPCF 20, the whole endorsement |
+| Does my policy cover damage to a car I rented | `c_018`, OAP 1 s.2.2.2 Temporary Substitute Automobile |
 
 No citation metric detects this failure, because a refusal carries no citations to check.
 
@@ -71,7 +128,7 @@ Each stage reads JSON from `runs/` and writes JSON to `runs/`, so any stage can 
 
 | Stage | Module | Output |
 |---|---|---|
-| Ingest | `src/ingest.py` | `chunks.json` — verbatim, structure-aware chunks |
+| Ingest | `src/ingest.py` | `chunks.json`, verbatim structure-aware chunks |
 | Retrieve + generate | `src/rag.py` | `answers.json` |
 | Decompose | `src/decompose.py` | `claims.json`, `uncited.json` |
 | Verify | `src/verify.py` | `verdicts.json` |
@@ -81,32 +138,6 @@ Each stage reads JSON from `runs/` and writes JSON to `runs/`, so any stage can 
 Chunk text is verbatim. Exclusions carry a `parent_section` reference to the coverage they modify, since an exclusion severed from its coverage produces confidently wrong answers. Policy-wide exclusions carry `"ALL"`.
 
 One page (the coverage-by-vehicle-type grid on p.10) required table extraction and is flagged `reconstructed: true` in the data, because its layout is reassembled rather than verbatim.
-
-## Running it
-
-Zero third-party dependencies at runtime. Stock Python 3.11+, standard library only, including a pure-Python BM25 and direct `urllib` calls to the API.
-
-```bash
-# Corpus (not committed, Crown copyright)
-# Download from fsrao.ca into corpus/:
-#   oap1.pdf    OAP 1, OAP1-EN.4 (2026)
-#   opcf20.pdf  OPCF 20, AF-142E
-#   opcf27.pdf  OPCF 27, AF-137E
-
-echo "ANTHROPIC_API_KEY=sk-ant-..." > .env
-
-# Ingest needs pdfplumber; everything else does not
-pip install pdfplumber
-python3 -m src.ingest
-
-python3 -m src.rag --limit 3
-python3 -m src.decompose --limit 3
-python3 -m src.verify --limit 3
-python3 -m src.table
-python3 -m src.agreement
-```
-
-Drop `--limit` for a full run. Output from the run reported above is committed under `runs/`.
 
 ## Limitations
 
