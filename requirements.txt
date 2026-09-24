@@ -1,4 +1,3 @@
-anthropic>=0.40.0
+# Ingest only. Every other stage runs on the standard library:
+# a pure-Python BM25 in src/bm25.py, and urllib for the API calls.
 pdfplumber>=0.11.0
-rank_bm25>=0.2.2
-python-dotenv>=1.0.0
